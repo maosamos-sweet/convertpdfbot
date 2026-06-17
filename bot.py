@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from telegram import Update, InputFile
 from telegram.ext import (
     Application,
@@ -10,8 +11,8 @@ from telegram.ext import (
     ConversationHandler,
 )
 from PIL import Image
+from flask import Flask
 import io
-import asyncio
 
 # Logging
 logging.basicConfig(
@@ -19,6 +20,17 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Flask app to keep Render Web Service alive
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "✅ PDF Bot is running!", 200
+
+@flask_app.route("/health")
+def health():
+    return "OK", 200
 
 # States
 COLLECTING_PHOTOS = 1
@@ -28,10 +40,8 @@ user_photos: dict[int, list[bytes]] = {}
 
 
 async def start_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /pdf command - start collecting photos"""
     user_id = update.effective_user.id
     user_photos[user_id] = []
-
     await update.message.reply_text(
         "📸 សូមផ្ញើរូបភាពរបស់អ្នក!\n\n"
         "• ផ្ញើរូបបានច្រើនតាមដែលអ្នកចង់បាន\n"
@@ -42,17 +52,13 @@ async def start_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive photos from user"""
     user_id = update.effective_user.id
-
     if user_id not in user_photos:
         user_photos[user_id] = []
 
-    # Get highest quality photo
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     photo_bytes = await file.download_as_bytearray()
-
     user_photos[user_id].append(bytes(photo_bytes))
 
     count = len(user_photos[user_id])
@@ -64,9 +70,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive photos sent as documents (uncompressed)"""
     user_id = update.effective_user.id
-
     if user_id not in user_photos:
         user_photos[user_id] = []
 
@@ -83,12 +87,10 @@ async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_T
         )
     else:
         await update.message.reply_text("❌ សូមផ្ញើតែរូបភាពប៉ុណ្ណោះ!")
-
     return COLLECTING_PHOTOS
 
 
 async def convert_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Convert collected photos to PDF"""
     user_id = update.effective_user.id
 
     if user_id not in user_photos or len(user_photos[user_id]) == 0:
@@ -97,66 +99,49 @@ async def convert_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     photos = user_photos[user_id]
     count = len(photos)
-
     await update.message.reply_text(f"⏳ កំពុងបំប្លែង {count} រូបទៅជា PDF...")
 
     try:
         images = []
         for photo_bytes in photos:
             img = Image.open(io.BytesIO(photo_bytes))
-            # Convert to RGB (required for PDF)
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            elif img.mode != "RGB":
+            if img.mode != "RGB":
                 img = img.convert("RGB")
             images.append(img)
 
-        # Create PDF in memory
         pdf_buffer = io.BytesIO()
-        first_image = images[0]
-        rest_images = images[1:] if len(images) > 1 else []
-
-        first_image.save(
+        images[0].save(
             pdf_buffer,
             format="PDF",
             save_all=True,
-            append_images=rest_images,
+            append_images=images[1:],
             resolution=150
         )
         pdf_buffer.seek(0)
 
-        # Send PDF to user
         await update.message.reply_document(
             document=InputFile(pdf_buffer, filename="converted.pdf"),
             caption=f"✅ PDF ត្រូវបានបំប្លែងដោយជោគជ័យ!\n📄 ចំនួនទំព័រ: {count}"
         )
-
     except Exception as e:
-        logger.error(f"Error converting to PDF: {e}")
-        await update.message.reply_text(
-            f"❌ មានបញ្ហាក្នុងការបំប្លែង PDF!\nError: {str(e)}"
-        )
+        logger.error(f"Error: {e}")
+        await update.message.reply_text(f"❌ មានបញ្ហា!\nError: {str(e)}")
     finally:
-        # Clear user's photos
         user_photos.pop(user_id, None)
 
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel the operation"""
     user_id = update.effective_user.id
     user_photos.pop(user_id, None)
-
     await update.message.reply_text(
-        "❌ បានបោះបង់ការបំប្លែង PDF!\n"
-        "វាយ /pdf ម្តងទៀតដើម្បីចាប់ផ្តើមថ្មី។"
+        "❌ បានបោះបង់!\nវាយ /pdf ម្តងទៀតដើម្បីចាប់ផ្តើមថ្មី។"
     )
     return ConversationHandler.END
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help command"""
     await update.message.reply_text(
         "🤖 *PDF Converter Bot*\n\n"
         "*របៀបប្រើ:*\n"
@@ -173,7 +158,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
     await update.message.reply_text(
         "👋 សូមស្វាគមន៍មកកាន់ PDF Converter Bot!\n\n"
         "វាយ /pdf ដើម្បីចាប់ផ្តើមបំប្លែងរូបភាពទៅ PDF\n"
@@ -181,14 +165,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
+        raise ValueError("TELEGRAM_BOT_TOKEN not set!")
 
+    # Run Flask in background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask server started")
+
+    # Run Telegram bot
     app = Application.builder().token(token).build()
 
-    # Conversation handler for /pdf flow
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("pdf", start_pdf)],
         states={
