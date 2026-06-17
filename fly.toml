@@ -1,5 +1,5 @@
 app = "telegram-pdf-bot"
-primary_region = "sgp"
+primary_region = "nrt"
 
 [build]
 
