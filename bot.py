@@ -13,15 +13,14 @@ from telegram.ext import (
 from PIL import Image
 from flask import Flask
 import io
+import asyncio
 
-# Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Flask app to keep Render Web Service alive
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -32,10 +31,7 @@ def home():
 def health():
     return "OK", 200
 
-# States
 COLLECTING_PHOTOS = 1
-
-# Storage: user_id -> list of images
 user_photos: dict[int, list[bytes]] = {}
 
 
@@ -55,12 +51,10 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
     if user_id not in user_photos:
         user_photos[user_id] = []
-
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     photo_bytes = await file.download_as_bytearray()
     user_photos[user_id].append(bytes(photo_bytes))
-
     count = len(user_photos[user_id])
     await update.message.reply_text(
         f"✅ បានទទួលរូបទី {count}\n"
@@ -73,13 +67,11 @@ async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     if user_id not in user_photos:
         user_photos[user_id] = []
-
     doc = update.message.document
     if doc.mime_type and doc.mime_type.startswith("image/"):
         file = await context.bot.get_file(doc.file_id)
         photo_bytes = await file.download_as_bytearray()
         user_photos[user_id].append(bytes(photo_bytes))
-
         count = len(user_photos[user_id])
         await update.message.reply_text(
             f"✅ បានទទួលរូបទី {count} (ឯកសារ)\n"
@@ -92,7 +84,6 @@ async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_T
 
 async def convert_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-
     if user_id not in user_photos or len(user_photos[user_id]) == 0:
         await update.message.reply_text("❌ មិនទាន់មានរូបភាពទេ! សូមផ្ញើរូបភាពសិន។")
         return COLLECTING_PHOTOS
@@ -166,21 +157,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
 
-def main():
+async def run_bot():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN not set!")
 
-    # Run Flask in background thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("Flask server started")
-
-    # Run Telegram bot
     app = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
@@ -201,7 +186,22 @@ def main():
     app.add_handler(conv_handler)
 
     logger.info("Bot is starting...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Keep running forever
+    await asyncio.Event().wait()
+
+
+def main():
+    # Start Flask in background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask server started")
+
+    # Run bot in main thread with its own event loop
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":
