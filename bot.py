@@ -341,8 +341,8 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     except Exception as e:
-        logger.error(f"Error in removebg: {e}")
-        await status_msg.edit_text("❌ ម៉ាស៊ីនមានបញ្ហាបច្ចេកទេសក្នុងការកាត់រូបភាព។")
+        logger.error(f"Error in removebg: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ មានបញ្ហា៖ {str(e)[:300]}")
         
     return ConversationHandler.END
 
