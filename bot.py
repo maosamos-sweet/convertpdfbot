@@ -29,7 +29,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "✅ Bot is running perfectly with Flask on Render!", 200
+    return "✅ PDF Bot is running perfectly with Flask on Render!", 200
 
 @flask_app.route("/health")
 def health():
@@ -40,7 +40,7 @@ COLLECTING_PHOTOS = 1
 AWAITING_FILE = 2
 AWAITING_PHOTO_BG = 3
 
-# ទិន្នន័យរក្សាទុករូបភាពបណ្តោះអាសន្នសម្រាប់បង្កើត PDF
+# ផ្ទុកទិន្នន័យរូបភាពបណ្តោះអាសន្នសម្រាប់បង្កើត PDF
 user_photos: dict[int, list[bytes]] = {}
 
 # ទាញយក API Keys ពី Environment Variables លើ Render
@@ -123,7 +123,7 @@ async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_T
 async def convert_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if user_id not in user_photos or len(user_photos[user_id]) == 0:
-        await update.message.reply_text("❌ មិនទាន់មានរូបភាពទេ! សូមផ្ញើរូបភាពសិន।")
+        await update.message.reply_text("❌ មិនទាន់មានរូបភាពទេ! សូមផ្ញើរូបភាពសិន។")
         return COLLECTING_PHOTOS
 
     photos = user_photos[user_id]
@@ -171,7 +171,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def handle_virus_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     document = update.message.document
     if not document:
-        await update.message.reply_text("❌ សូមផ្ញើជាប្រភេទឯកសារ (Document File)।")
+        await update.message.reply_text("❌ សូមផ្ញើជាប្រភេទឯកសារ (Document File)។")
         return ConversationHandler.END
 
     file_name = document.file_name.lower()
@@ -210,11 +210,11 @@ async def handle_virus_check(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 await status_msg.edit_text(f"ℹ️ ឯកសារទំហំ {file_size_mb:.2f} MB មិនមានប្រវត្តិអាក្រក់ក្នុង Database ឡើយ។ សូមប្រុងប្រយ័ត្ន។")
         except Exception as e:
-            await status_msg.edit_text("❌ 有问题！មានបញ្ហាក្នុងការឆែកប្រព័ន្ធទិន្នន័យ Database។")
+            await status_msg.edit_text("❌ មានបញ្ហាក្នុងការឆែកប្រព័ន្ធទិន្នន័យ Database។")
         return ConversationHandler.END
 
     # ករណីឯកសារតូចជាង 20MB (Scan ផ្ទាល់)
-    status_msg = await update.message.reply_text("⏳ កំពុងទាញយកឯកសារទៅកាន់ម៉ាស៊ីនវិភាគ... សូមរង់ចាំ।")
+    status_msg = await update.message.reply_text("⏳ កំពុងទាញយកឯកសារទៅកាន់ម៉ាស៊ីនវិភាគ... សូមរង់ចាំ។")
     try:
         tg_file = await context.bot.get_file(document.file_id)
         file_bytes = await tg_file.download_as_bytearray()
@@ -232,7 +232,7 @@ async def handle_virus_check(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 await status_msg.edit_text("✅ ឯកសារនេះត្រូវបានពិនិត្យទាំងស្រុងហើយ៖ មានសុវត្ថិភាពខ្ពស់។")
         else:
-            await status_msg.edit_text("❌ មិនអាចភ្ជាប់ទៅកាន់ម៉ាស៊ីន VirusTotal បានឡើយ។")
+            await status_msg.edit_text("❌ មិនអាចភ្ជាប់ទៅកាន់ម៉ាស៊ីន VirusTotal បានឡើយ BOUND_ERROR។")
     except Exception as e:
         await status_msg.edit_text("❌ កើតមានកំហុសក្នុងការវិភាគឯកសារ។")
     return ConversationHandler.END
@@ -253,7 +253,7 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ សូមផ្ញើតែឯកសារប្រភេទរូបភាពប៉ុណ្ណោះ។")
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text("⏳ កំពុងដំណើរការលុប Background ដោយប្រព័ន្ធ AI Hugging Face (Free)... សូមរង់ចាំ។")
+    status_msg = await update.message.reply_text("⏳ កំពុងតភ្ជាប់ទៅកាន់ប្រព័ន្ធ AI Hugging Face (Free)... សូមរង់ចាំ។")
 
     try:
         # ទាញយករូបភាពទៅក្នុង Memory ជាប្រភេទ Bytes
@@ -262,18 +262,35 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         API_URL = "https://api-inference.huggingface.co/models/briaai/RMBG-1.4"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         
-        # ធ្វើការហៅទៅកាន់ API ជុំទី ១
-        response = requests.post(API_URL, headers=headers, data=bytes(img_bytes))
+        response = None
+        max_attempts = 4
         
-        # ករណីម៉ាស៊ីន AI កំពុងដេក (Sleep/Loading 503) វាអាចនឹងតម្រូវឱ្យរង់ចាំយូរបន្តិច (ព្យាយាមរហូតដល់ ៣ ដង)
-        retry_count = 0
-        while response.status_code == 503 and retry_count < 3:
-            retry_count += 1
-            await status_msg.edit_text(f"⏳ ម៉ាស៊ីន AI កំពុងចាប់ផ្តើមដំណើរការ (Loading Model)... សូមរង់ចាំ {retry_count * 4} វិនាទី។")
-            await asyncio.sleep(4)
-            response = requests.post(API_URL, headers=headers, data=bytes(img_bytes))
+        # រង្វិលជុំដោះស្រាយបញ្ហា Network NameResolutionError និង 503 Loading
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if attempt > 1:
+                    await status_msg.edit_text(f"⏳ កំពុងព្យាយាមតភ្ជាប់ឡើងវិញជាលើកទី {attempt}... (Network Retry)")
+                
+                response = requests.post(API_URL, headers=headers, data=bytes(img_bytes), timeout=25)
+                
+                # ប្រសិនបើ AI កំពុង Sleep (503) ត្រូវរង់ចាំឱ្យវាភ្ញាក់
+                if response.status_code == 503:
+                    await status_msg.edit_text(f"⏳ ម៉ាស៊ីន AI កំពុងចាប់ផ្តើមដំណើរការ (Loading Model)... រង់ចាំ ៥ វិនាទី។")
+                    await asyncio.sleep(5)
+                    continue
+                
+                # ប្រសិនបើជោគជ័យ ត្រូវចាកចេញពីរង្វិលជុំ
+                if response.status_code == 200:
+                    break
+                    
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as net_err:
+                logger.warning(f"Attempt {attempt} failed with network error: {net_err}")
+                if attempt == max_attempts:
+                    await status_msg.edit_text("❌ ប្រព័ន្ធអ៊ីនធឺណិតរបស់ Server Render មានបញ្ហាមិនអាចទាក់ទងទៅ Hugging Face បានទេ។ សូមព្យាយាមម្តងទៀតនៅបន្តិចទៀតនេះ។")
+                    return ConversationHandler.END
+                await asyncio.sleep(4)
 
-        if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("image/"):
+        if response and response.status_code == 200 and response.headers.get("Content-Type", "").startswith("image/"):
             output_buffer = BytesIO(response.content)
             output_buffer.seek(0)
             output_buffer.name = "removed_bg.png"
@@ -285,8 +302,10 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 caption="✅ លុបផ្ទៃខាងក្រោយជោគជ័យ! (ឥតគិតថ្លៃ ១០០%)"
             )
         else:
-            logger.error(f"Hugging Face Error Status: {response.status_code}, Response: {response.text}")
-            await status_msg.edit_text("❌ មិនអាចលុបផ្ទៃខាងក្រោយបានទេ (ម៉ាស៊ីន AI ប្រហែលជាកំពុងរវល់ខ្លាំង ឬ HF_TOKEN មិនត្រឹមត្រូវ)។")
+            error_text = response.text if response else "No response"
+            logger.error(f"Hugging Face Error: {error_text}")
+            await status_msg.edit_text("❌ មិនអាចលុបផ្ទៃខាងក្រោយបានទេ (សូមពិនិត្យមើលថាតើអ្នកបានបង្កើត និងដាក់ HF_TOKEN ត្រឹមត្រូវក្នុង Render រួចរាល់ហើយឬនៅ?)។")
+            
     except Exception as e:
         logger.error(f"Error in removebg: {e}")
         await status_msg.edit_text("❌ ម៉ាស៊ីនមានបញ្ហាបច្ចេកទេសក្នុងការកាត់រូបភាព។")
@@ -294,7 +313,7 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
-# ==================== การគ្រប់គ្រងការរត់កម្មវិធី និង SERVER ====================
+# ==================== ការគ្រប់គ្រងការរត់កម្មវិធី និង SERVER ====================
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
