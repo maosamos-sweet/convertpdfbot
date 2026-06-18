@@ -7,7 +7,6 @@ import io
 from io import BytesIO
 from PIL import Image
 from flask import Flask
-from rembg import remove
 from telegram import Update, InputFile
 from telegram.ext import (
     Application,
@@ -25,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# បង្កើត Flask App សម្រាប់រត់នៅលើ Render (ការពារកុំឱ្យ Server គាំង ឬគេងលក់)
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -46,40 +44,42 @@ user_photos: dict[int, list[bytes]] = {}
 
 # ទាញយក API Keys ពី Environment Variables លើ Render
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "YOUR_VIRUSTOTAL_API_KEY")
+HF_TOKEN = os.environ.get("HF_TOKEN", "YOUR_HUGGINGFACE_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 សួស្តី! ខ្ញុំជា Bot ជំនួយការរបស់លោកអ្នក។ សូមប្រើប្រាស់បញ្ជាខាងក្រោម៖\n\n"
-        "📄 /pdf - ដើម្បីបំប្លែងរូបភាពជាច្រើនទៅជាឯកសារ PDF\n"
+        "👋 សូមស្វាគមន៍មកកាន់ជំនួយការឆ្លាតវៃ!\n\n"
+        "📄 /pdf - ដើម្បីបំប្លែងរូបភាពទៅជាឯកសារ PDF\n"
         "🔍 /check - ដើម្បីពិនិត្យមើលមេរោគលើឯកសារ (Virus Scan - Hybrid)\n"
-        "🖼️ /removebg - ដើម្បីលុបផ្ទៃខាងក្រោយរូបភាព (Remove Background)\n"
+        "🖼️ /removebg - ដើម្បីលុបផ្ទៃខាងក្រោយរូបភាព (Hugging Face Free)\n"
         "❓ /help - សម្រាប់ព័ត៌មានបន្ថែម"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ℹ️ **របៀបប្រើប្រាស់បញ្ជានីមួយៗ៖**\n\n"
-        "• វាយ /pdf រួចផ្ញើរូបភាពបន្តបន្ទាប់គ្នា ហើយវាយ /done ដើម្បីទទួលបានឯកសារ PDF។\n"
-        "• វាយ /check រួចផ្ញើ ឬ Forward ឯកសារ (File) ដែលអ្នកសង្ស័យដើម្បីឆែករកមេរោគ Scammer។\n"
-        "• វាយ /removebg រួចផ្ញើរូបភាពមក ដើម្បីលុបផ្ទៃខាងក្រោយចេញជាប្រភេទ .png ថ្លា។\n"
-        "• វាយ /cancel ក្នុងពេលកំពុងប្រើមុខងារណាមួយ ដើម្បីបោះបង់ជំហាននោះចោល។"
+        "🤖 *ជំនួយការបច្ចេកទេស*\n\n"
+        "*របៀបប្រើប្រាស់:*\n"
+        "1️⃣ វាយ /pdf រួចផ្ញើរូបភាពបន្តបន្ទាប់គ្នា និងវាយ /done ដើម្បីបង្កើត PDF\n"
+        "2️⃣ វាយ /check រួចផ្ញើឯកសារដែលសង្ស័យ (គាំទ្រដល់ឯកសារ Scammer 40MB)\n"
+        "3️⃣ វាយ /removebg រួចផ្ញើរូបភាពមក ដើម្បីលុបផ្ទៃខាងក្រោយចេញជាប្រភេទ .png\n"
+        "4️⃣ វាយ /cancel ដើម្បីបោះបង់ជំហានបច្ចុប្បន្ន",
+        parse_mode="Markdown"
     )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id in user_photos:
-        del user_photos[user_id]
-    await update.message.reply_text("❌ ការបញ្ជាត្រូវបានបោះបង់ចោល។")
+    user_photos.pop(user_id, None)
+    await update.message.reply_text("❌ បានបោះបង់ជំហានសន្ទនារួចរាល់។")
     return ConversationHandler.END
 
 
-# ==================== មុខងារចាស់៖ បំប្លែងរូបភាពទៅជា PDF (/pdf) ====================
+# ==================== មុខងារទី ១៖ បំប្លែងរូបភាពទៅជា PDF (/pdf) ====================
 
 async def start_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     user_photos[user_id] = []
     await update.message.reply_text(
-        "📸 សូមផ្ញើរូបភាពរបស់អ្នក! (មុខងារបំប្លែងទៅ PDF)\n\n"
+        "📸 សូមផ្ញើរូបភាពរបស់អ្នក!\n\n"
         "• ផ្ញើរូបបានច្រើនតាមដែលអ្នកចង់បាន\n"
         "• នៅពេលផ្ញើរូបចប់ សូមវាយ /done ដើម្បីបំប្លែងទៅ PDF\n"
         "• វាយ /cancel ដើម្បីបោះបង់"
@@ -90,182 +90,154 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
     if user_id not in user_photos:
         user_photos[user_id] = []
-    
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = await photo_file.download_as_bytearray()
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await file.download_as_bytearray()
     user_photos[user_id].append(bytes(photo_bytes))
-    
-    await update.message.reply_text(f"✅ បានទទួលរូបភាពទី {len(user_photos[user_id])}។ រួចរាល់សូមវាយ /done")
+    count = len(user_photos[user_id])
+    await update.message.reply_text(
+        f"✅ បានទទួលរូបទី {count}\n"
+        f"• ផ្ញើរូបបន្ថែម ឬ វាយ /done ដើម្បីបំប្លែងទៅ PDF"
+    )
     return COLLECTING_PHOTOS
 
 async def receive_document_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if user_id not in user_photos:
         user_photos[user_id] = []
-        
-    doc_file = await update.message.document.get_file()
-    doc_bytes = await doc_file.download_as_bytearray()
-    user_photos[user_id].append(bytes(doc_bytes))
-    
-    await update.message.reply_text(f"✅ បានទទួលរូបភាព (File) ទី {len(user_photos[user_id])}។ រួចរាល់សូមវាយ /done")
+    doc = update.message.document
+    if doc.mime_type and doc.mime_type.startswith("image/"):
+        file = await context.bot.get_file(doc.file_id)
+        photo_bytes = await file.download_as_bytearray()
+        user_photos[user_id].append(bytes(photo_bytes))
+        count = len(user_photos[user_id])
+        await update.message.reply_text(
+            f"✅ បានទទួលរូបទី {count} (ឯកសារ)\n"
+            f"• ផ្ញើរូបបន្ថែម ឬ វាយ /done ដើម្បីបំប្លែងទៅ PDF"
+        )
+    else:
+        await update.message.reply_text("❌ សូមផ្ញើតែរូបភាពប៉ុណ្ណោះ!")
     return COLLECTING_PHOTOS
 
 async def convert_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in user_photos or not user_photos[user_id]:
-        await update.message.reply_text("❌ មិនទាន់មានរូបភាពណាមួយត្រូវបានផ្ញើមកឡើយ។ សូមផ្ញើរូបភាពជាមុនសិន។")
+    if user_id not in user_photos or len(user_photos[user_id]) == 0:
+        await update.message.reply_text("❌ មិនទាន់មានរូបភាពទេ! សូមផ្ញើរូបភាពសិន។")
         return COLLECTING_PHOTOS
 
-    status_msg = await update.message.reply_text("⏳ កំពុងបង្កើតឯកសារ PDF... សូមរង់ចាំមួយភ្លែត។")
-    
+    photos = user_photos[user_id]
+    count = len(photos)
+    status_msg = await update.message.reply_text(f"⏳ កំពុងបំប្លែង {count} រូបទៅជា PDF...")
+
     try:
         images = []
-        for img_bytes in user_photos[user_id]:
-            img = Image.open(io.BytesIO(img_bytes))
-            if img.mode in ("RGBA", "P"):
+        for photo_bytes in photos:
+            img = Image.open(io.BytesIO(photo_bytes))
+            if img.mode != "RGB":
                 img = img.convert("RGB")
             images.append(img)
-            
+
         pdf_buffer = io.BytesIO()
-        images[0].save(pdf_buffer, format="PDF", save_all=True, append_images=images[1:])
+        images[0].save(
+            pdf_buffer,
+            format="PDF",
+            save_all=True,
+            append_images=images[1:],
+            resolution=150
+        )
         pdf_buffer.seek(0)
-        
+
         await status_msg.delete()
         await update.message.reply_document(
-            document=InputFile(pdf_buffer, filename="converted_images.pdf"),
-            caption="✅ ឯកសារ PDF របស់អ្នកត្រូវបានបង្កើតជោគជ័យហើយ!"
+            document=InputFile(pdf_buffer, filename="converted.pdf"),
+            caption=f"✅ PDF ត្រូវបានបំប្លែងដោយជោគជ័យ!\n📄 ចំនួនទំព័រ: {count}"
         )
     except Exception as e:
-        logger.error(f"Error converting to PDF: {e}")
-        await status_msg.edit_text("❌ កើតមានកំហុសក្នុងការបង្កើតឯកសារ PDF។")
-        
-    if user_id in user_photos:
-        del user_photos[user_id]
+        logger.error(f"Error: {e}")
+        await update.message.reply_text(f"❌ មានបញ្ហា!\nError: {str(e)}")
+    finally:
+        user_photos.pop(user_id, None)
+
     return ConversationHandler.END
 
 
-# ==================== មុខងារថ្មីទី ១៖ ពិនិត្យមេរោគបែប HYBRID (/check) ====================
+# ==================== មុខងារទី ២៖ ពិនិត្យមេរោគបែប HYBRID (/check) ====================
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("🔍 សូមផ្ញើ ឬ Forward ឯកសារ (File/Document) ដែលអ្នកសង្ស័យចង់ឱ្យខ្ញុំពិនិត្យមើលមេរោគ។")
+    await update.message.reply_text("🔍 សូមផ្ញើ ឬ Forward ឯកសារ (File/Document) ដើម្បីឱ្យខ្ញុំពិនិត្យរកល្បិចបោកប្រាស់ ឬមេរោគ។")
     return AWAITING_FILE
 
 async def handle_virus_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     document = update.message.document
     if not document:
-        await update.message.reply_text("❌ សូមផ្ញើឯកសារជាប្រភេទ File ឬ Document បញ្ជាក់ច្បាស់លាស់។")
+        await update.message.reply_text("❌ សូមផ្ញើជាប្រភេទឯកសារ (Document File)។")
         return ConversationHandler.END
 
     file_name = document.file_name.lower()
     file_size_mb = document.file_size / (1024 * 1024)
     headers = {"x-apikey": VIRUSTOTAL_API_KEY}
 
-    # ----- ករណីទី ១៖ ឯកសារធំជាង 20MB (ពិនិត្យតាម Database Hash និងល្បិច Scammer) -----
+    # ករណីឯកសារធំជាង 20MB (ល្បិច Scammer 40MB)
     if file_size_mb > 20:
         status_msg = await update.message.reply_text(
-            f"📦 ឯកសារមានទំហំធំ ({file_size_mb:.2f} MB) ហួសពីដែនកំណត់ទាញយករបស់ Render។\n"
-            f"🔍 កំពុងប្រើប្រាស់ប្រព័ន្ធ Hybrid ដើម្បីស្វែងរកប្រវត្តិកូដមេរោគ (Hash Database Search)..."
+            f"📦 ឯកសារមានទំហំធំ ({file_size_mb:.2f} MB) លើសពីដែនកំណត់ទាញយករបស់ Render។\n"
+            f"🔍 កំពុងឆែករកប្រវត្តិកូដមេរោគតាមរយៈប្រព័ន្ធ Hybrid Database..."
         )
-        
         try:
-            # ស្វែងរកក្នុងប្រព័ន្ធទិន្នន័យ VirusTotal តាមរយៈឈ្មោះឯកសារ
             search_url = f"https://www.virustotal.com/api/v3/search?query={document.file_name}"
             response = requests.get(search_url, headers=headers)
-            
             if response.status_code == 200:
                 data = response.json()
                 if data.get('data') and len(data['data']) > 0:
-                    attributes = data['data'][0]['attributes']
-                    stats = attributes.get('last_analysis_stats', {})
-                    malicious_count = stats.get('malicious', 0)
-                    
-                    if malicious_count > 0:
-                        khmer_reply = (
-                            f"🚨 **រកឃើញមេរោគតាមប្រវត្តិទិន្នន័យ (Malware Database Matched!)** 🚨\n\n"
+                    stats = data['data'][0]['attributes'].get('last_analysis_stats', {})
+                    malicious = stats.get('malicious', 0)
+                    if malicious > 0:
+                        await status_msg.edit_text(
+                            f"🚨 **រកឃើញមេរោគក្នុង Database!** 🚨\n\n"
                             f"📁 ឈ្មោះឯកសារ៖ `{document.file_name}`\n"
-                            f"📦 ទំហំឯកសារ៖ {file_size_mb:.2f} MB\n"
-                            f"⚠️ ប្រព័ន្ធសុវត្ថិភាពចំនួន {malicious_count} បានបញ្ជាក់ថាវាជាមេរោគ!\n\n"
-                            f"❌ **សូមកុំចុចបើក (Open) ឯកសារនេះដាច់ខាត ព្រោះវាជាល្បិចបោកប្រាស់របស់ Scammer ដើម្បី Hack យកគណនី Telegram របស់អ្នក!**"
+                            f"⚠️ ប្រព័ន្ធសុវត្ថិភាពចំនួន {malicious} បានបញ្ជាក់ថាជាមេរោគលួចទិន្នន័យ។ ហាមបើកដាច់ខាត!"
                         )
-                        await status_msg.edit_text(khmer_reply, parse_mode="Markdown")
                         return ConversationHandler.END
-            
-            # បើមិនមានប្រវត្តិក្នុង Database តែចូលល្បិច Scammer (ទំហំ 20-40MB កន្ទុយ .exe តែប្រាប់ថាជារូបភាព)
+
             if file_name.endswith(('.exe', '.scr', '.pif', '.bat', '.cmd', '.msi', '.vbs')):
-                khmer_scam_warning = (
-                    f"🚨 **ការព្រមានកម្រិតខ្ពស់៖ សញ្ញាណបោកប្រាស់ Scammer 100%** 🚨\n\n"
-                    f"📁 ឈ្មោះឯកសារ៖ `{document.file_name}`\n"
-                    f"📦 ទំហំឯកសារ៖ {file_size_mb:.2f} MB\n\n"
-                    f"⚠️ **ការវិភាគ៖** ទោះបីជាឯកសារនេះទើបតែបង្កើតថ្មីមិនទាន់មានប្រវត្តិក្នុង Database "
-                    f"ប៉ុន្តែវាជាប្រភេទឯកសារកម្មវិធីដែលអាចដំណើរការបាន (.exe) ដែលមានទំហំធំខ្លាំង (ចន្លោះ 20MB-40MB)។ "
-                    f"នេះជាល្បិចដែលជនខិលខូចបន្លំភ្នែកពលរដ្ឋថាជារូបភាពថតចម្លង (Fake Photo)។\n\n"
-                    f"❌ **ប្រសិនបើអ្នកចុចទាញយក ឬចុចបើក (Open/Run) វានឹងលួចយកគណនី Telegram និងទិន្នន័យទូរស័ព្ទ/កុំព្យូទ័ររបស់អ្នកភ្លាមៗ! សូមលុបវាចោលដាច់ខាត!**"
-                )
-                await status_msg.edit_text(khmer_scam_warning, parse_mode="Markdown")
-            else:
                 await status_msg.edit_text(
-                    f"ℹ️ ឯកសារនេះមានទំហំ {file_size_mb:.2f} MB (ធំជាង 20MB មិនអាច Scan ផ្ទាល់លើ Render បានឡើយ) "
-                    f"ហើយមិនមានប្រវត្តិតម្រុយមេរោគនៅក្នុងប្រព័ន្ធទិន្នន័យឡើយ។ សូមប្រុងប្រយ័ត្នដោយខ្លួនឯងមុននឹងបើក។"
+                    f"🚨 **ការព្រមានកម្រិតខ្ពស់៖ សញ្ញាណបោកប្រាស់ Scammer 100%** 🚨\n\n"
+                    f"📁 ឈ្មោះ៖ `{document.file_name}` ({file_size_mb:.2f} MB)\n"
+                    f"⚠️ វាជាប្រភេទឯកសារកម្មវិធីដែលអាចដំណើរការបាន (.exe) ដែលមានទំហំធំខុសធម្មតា។ "
+                    f"នេះជាល្បិចបន្លំថាជារូបភាពដើម្បីកុំឱ្យ Render ទាញយកកើត។ សូមលុបវាចោលភ្លាម ការពារការបាត់បង់គណនី Telegram!"
                 )
+            else:
+                await status_msg.edit_text(f"ℹ️ ឯកសារទំហំ {file_size_mb:.2f} MB មិនមានប្រវត្តិអាក្រក់ក្នុង Database ឡើយ។ សូមប្រុងប្រយ័ត្ន។")
         except Exception as e:
-            logger.error(f"Error in hybrid search: {e}")
-            await status_msg.edit_text("❌ កើតមានកំហុសក្នុងការឆែករកប្រវត្តិមេរោគក្នុង Database។")
-            
+            await status_msg.edit_text("❌ មានបញ្ហាក្នុងការឆែកប្រព័ន្ធទិន្នន័យ Database។")
         return ConversationHandler.END
 
-    # ----- ករណីទី ២៖ ឯកសារតូចជាង ឬស្មើ 20MB (ទាញយកមក Scan ផ្ទាល់ជាមួយម៉ាស៊ីន VirusTotal) -----
-    status_msg = await update.message.reply_text("⏳ ឯកសារស្ថិតក្នុងទំហំដែលអាចទាញយកបាន កំពុងបញ្ជូនទៅកាន់ម៉ាស៊ីនវិភាគ... សូមរង់ចាំ។")
-    
+    # ករណីឯកសារតូចជាង 20MB (Scan ផ្ទាល់)
+    status_msg = await update.message.reply_text("⏳ កំពុងទាញយកឯកសារទៅកាន់ម៉ាស៊ីនវិភាគ... សូមរង់ចាំ។")
     try:
         tg_file = await context.bot.get_file(document.file_id)
         file_bytes = await tg_file.download_as_bytearray()
-        
         url = "https://www.virustotal.com/api/v3/files"
-        files = {"file": (document.file_name, bytes(file_bytes))}
-        
-        response = requests.post(url, headers=headers, files=files)
+        response = requests.post(url, headers=headers, files={"file": (document.file_name, bytes(file_bytes))})
         
         if response.status_code == 200:
             analysis_id = response.json()['data']['id']
-            report_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
-            
-            # រង់ចាំឱ្យប្រព័ន្ធវិភាគ ២ វិនាទី
             await asyncio.sleep(2)
-            report_response = requests.get(report_url, headers=headers).json()
+            report = requests.get(f"https://www.virustotal.com/api/v3/analyses/{analysis_id}", headers=headers).json()
+            malicious = report['data']['attributes']['stats'].get('malicious', 0)
             
-            stats = report_response['data']['attributes']['stats']
-            malicious_count = stats.get('malicious', 0)
-            
-            if malicious_count > 0:
-                virus_names = []
-                results = report_response['data']['attributes']['results']
-                for engine, res in results.items():
-                    if res.get('category') == 'malicious' and res.get('result'):
-                        virus_names.append(f"- {res['result']} ({engine})")
-                
-                viruses_str = "\n".join(virus_names[:3])
-                
-                khmer_reply = (
-                    f"🚨 **រកឃើញមេរោគច្បាស់ក្រឡែត (Virus Found!)** 🚨\n\n"
-                    f"📁 ឈ្មោះឯកសារ៖ `{document.file_name}`\n"
-                    f"⚠️ កម្មវិធីកំចាត់មេរោគចំនួន {malicious_count} បានរាយការណ៍ថាជាមេរោគគ្រោះថ្នាក់!\n\n"
-                    f"🦠 **ប្រភេទមេរោគបច្ចេកទេស៖**\n{viruses_str}\n\n"
-                    f"❌ **សូមលុបឯកសារនេះចោលភ្លាម ការពារការលួចយកគណនី (Hack) របស់អ្នក!**"
-                )
-                await status_msg.edit_text(khmer_reply, parse_mode="Markdown")
+            if malicious > 0:
+                await status_msg.edit_text(f"🚨 **រកឃើញមេរោគគ្រោះថ្នាក់!** មានប្រព័ន្ធកំចាត់មេរោគចំនួន {malicious} បានរាយការណ៍ថាវាជាឯកសារមិនមានសុវត្ថិភាព។")
             else:
-                await status_msg.edit_text("✅ ឯកសារនេះត្រូវបានទាញយក និងពិនិត្យទាំងស្រុងហើយ៖ មានសុវត្ថិភាពខ្ពស់។")
+                await status_msg.edit_text("✅ ឯកសារនេះត្រូវបានពិនិត្យទាំងស្រុងហើយ៖ មានសុវត្ថិភាពខ្ពស់។")
         else:
-            await status_msg.edit_text("❌ មិនអាចភ្ជាប់ទៅកាន់ម៉ាស៊ីនកំចាត់មេរោគរបស់ VirusTotal បានឡើយ។")
-            
+            await status_msg.edit_text("❌ មិនអាចភ្ជាប់ទៅកាន់ម៉ាស៊ីន VirusTotal បានឡើយ។")
     except Exception as e:
-        logger.error(f"Error downloading or scanning small file: {e}")
-        await status_msg.edit_text("❌ កើតមានកំហុសបច្ចេកទេសក្នុងការទាញយក និងវិភាគឯកសារនេះ។")
-
+        await status_msg.edit_text("❌ កើតមានកំហុសក្នុងការវិភាគឯកសារ។")
     return ConversationHandler.END
 
 
-# ==================== មុខងារថ្មីទី ២៖ លុបផ្ទៃខាងក្រោយរូបភាព (/removebg) ====================
+# ==================== មុខងារទី ៣៖ លុបផ្ទៃខាងក្រោយរូបភាព (/removebg តាម HUGGING FACE) ====================
 
 async def removebg_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🖼️ សូមផ្ញើរូបភាពដែលអ្នកចង់លុបផ្ទៃខាងក្រោយ (Background) មកកាន់ខ្ញុំ។")
@@ -280,35 +252,35 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ សូមផ្ញើតែឯកសារប្រភេទរូបភាពប៉ុណ្ណោះ។")
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text("⏳ កំពុងដំណើរការកាត់លុប Background... សូមរង់ចាំបន្តិច។")
+    status_msg = await update.message.reply_text("⏳ កំពុងដំណើរការលុប Background ដោយប្រព័ន្ធ AI Hugging Face (Free)... សូមរង់ចាំ។")
 
     try:
-        # ទាញយករូបភាពចូលទៅក្នុង Memory
         img_buffer = BytesIO()
         await photo_file.download_to_memory(img_buffer)
         img_buffer.seek(0)
         
-        # ដំណើរការលុបផ្ទៃខាងក្រោយដោយប្រើបណ្ណាល័យ rembg (Open Source មិនអស់លុយ)
-        input_image = Image.open(img_buffer)
-        output_image = remove(input_image)
+        API_URL = "https://api-inference.huggingface.co/models/briaai/RMBG-1.4"
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         
-        # រក្សាទុកជាទម្រង់ PNG ដើម្បីរក្សាភាពថ្លា (Transparency)
-        output_buffer = BytesIO()
-        output_image.save(output_buffer, format="PNG")
-        output_buffer.seek(0)
-        output_buffer.name = "removed_background.png"
+        response = requests.post(API_URL, headers=headers, data=img_buffer.read())
         
-        # ផ្ញើត្រឡប់ទៅវិញជា Document ដើម្បីកុំឱ្យ Telegram បង្រួមគុណភាពរូបភាព
-        await status_msg.delete()
-        await context.bot.send_document(
-            chat_id=update.message.chat_id,
-            document=output_buffer,
-            caption="✅ បានលុបផ្ទៃខាងក្រោយជោគជ័យ! រូបភាពត្រូវបានរក្សាជាប្រភេទច្បាស់ (.png)"
-        )
-    except Exception as e:
-        logger.error(f"Error in removebg processing: {e}")
-        await status_msg.edit_text("❌ ម៉ាស៊ីនមិនអាចកាត់ ឬលុបផ្ទៃខាងក្រោយនៃរូបភាពនេះបានឡើយ។")
+        if response.status_code == 503:
+            await status_msg.edit_text("⏳ ម៉ាស៊ីន AI កំពុងចាប់ផ្តើម (Loading Model)... សូមរង់ចាំ ៣ វិនាទីទៀត។")
+            await asyncio.sleep(3)
+            img_buffer.seek(0)
+            response = requests.post(API_URL, headers=headers, data=img_buffer.read())
 
+        if response.status_code == 200:
+            output_buffer = BytesIO(response.content)
+            output_buffer.seek(0)
+            output_buffer.name = "removed_bg.png"
+            
+            await status_msg.delete()
+            await context.bot.send_document(chat_id=update.message.chat_id, document=output_buffer, caption="✅ លុបផ្ទៃខាងក្រោយជោគជ័យ! (ឥតគិតថ្លៃ)")
+        else:
+            await status_msg.edit_text("❌ មិនអាចលុបផ្ទៃខាងក្រោយបានទេ (សូមពិនិត្យមើល HF_TOKEN របស់អ្នក)។")
+    except Exception as e:
+        await status_msg.edit_text("❌ ម៉ាស៊ីនមានបញ្ហាបច្ចេកទេសក្នុងការកាត់រូបភាព។")
     return ConversationHandler.END
 
 
@@ -321,11 +293,10 @@ def run_flask():
 async def run_bot():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError("សូមកំណត់ប្រព័ន្ធផ្ទៀងផ្ទាត់ TELEGRAM_BOT_TOKEN លើ Render ជាមុនសិន!")
+        raise ValueError("TELEGRAM_BOT_TOKEN not set!")
 
     app = Application.builder().token(token).build()
 
-    # បង្កើតប្រព័ន្ធគ្រប់គ្រងសន្ទនា និងបញ្ជារួមគ្នា
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("pdf", start_pdf),
@@ -353,19 +324,15 @@ async def run_bot():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(conv_handler)
 
-    logger.info("Bot is starting polling setup...")
+    logger.info("Bot is starting setup...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    
     await asyncio.Event().wait()
 
 def main():
-    # ដំណើរការ Flask នៅក្នុង Thread ផ្សេងមួយដើម្បីកុំឱ្យរំខានដល់ Bot
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    # ដំណើរការ Telegram Bot នៅក្នុង Asyncio Event Loop ចម្បង
     asyncio.run(run_bot())
 
 if __name__ == "__main__":
