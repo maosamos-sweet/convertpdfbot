@@ -327,7 +327,7 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         loop = asyncio.get_event_loop()
         remove_fn = get_rembg()
         output_bytes = await loop.run_in_executor(
-            None, lambda: remove_fn(bytes(img_bytes))
+            None, lambda: remove_fn(bytes(img_bytes), force_return_bytes=True)
         )
 
         output_buffer = BytesIO(output_bytes)
