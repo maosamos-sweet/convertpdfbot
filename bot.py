@@ -6,8 +6,16 @@ import requests
 import io
 from io import BytesIO
 from PIL import Image
-from rembg import remove as rembg_remove
 from flask import Flask
+
+# Lazy load rembg ដើម្បីកុំឱ្យ Flask យឺតពេល Start Port
+_rembg_remove = None
+def get_rembg():
+    global _rembg_remove
+    if _rembg_remove is None:
+        from rembg import remove as _remove
+        _rembg_remove = _remove
+    return _rembg_remove
 from telegram import Update, InputFile
 from telegram.ext import (
     Application,
@@ -262,7 +270,7 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # ប្រើ rembg ដំណើរការក្នុងម៉ាស៊ីន Render ផ្ទាល់ (គ្មានការតភ្ជាប់ខាងក្រៅ)
         loop = asyncio.get_event_loop()
         output_bytes = await loop.run_in_executor(
-            None, rembg_remove, bytes(img_bytes)
+            None, get_rembg(), bytes(img_bytes)
         )
 
         output_buffer = BytesIO(output_bytes)
