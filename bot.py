@@ -252,21 +252,7 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ សូមផ្ញើតែឯកសារប្រភេទរូបភាពប៉ុណ្ណោះ។")
         return ConversationHandler.END
 
-    # ពិនិត្យថាតើ model មានហើយឬអត់
-    if not MODEL_PATH.exists():
-        status_msg = await update.message.reply_text(
-            f"⬇️ កំពុង Download AI Model (~{MODEL_SIZE_MB}MB) លើកដំបូង...\n"
-            f"[░░░░░░░░░░] 0%"
-        )
-    else:
-        # ពិនិត្យថាតើ model មានហើយឬអត់
-    if not MODEL_PATH.exists():
-        status_msg = await update.message.reply_text(
-            f"⬇️ កំពុង Download AI Model (~{MODEL_SIZE_MB}MB) លើកដំបូង...\n"
-            f"[░░░░░░░░░░] 0%"
-        )
-    else:
-        status_msg = await update.message.reply_text("⏳ កំពុងកាត់ Background តាម AI... សូមរង់ចាំ។")
+    status_msg = await update.message.reply_text("⏳ កំពុងកាត់ Background តាម AI... សូមរង់ចាំ។")
 
     try:
         img_bytes = await photo_file.download_as_bytearray()
