@@ -3,19 +3,43 @@ import logging
 import threading
 import asyncio
 import requests
+import urllib.request
 import io
 from io import BytesIO
+from pathlib import Path
 from PIL import Image
 from flask import Flask
 
-# Lazy load rembg ដើម្បីកុំឱ្យ Flask យឺតពេល Start Port
-_rembg_remove = None
+# ទាញយក rembg model ជាមួយ Progress បង្ហាញទៅ Telegram
+MODEL_PATH = Path.home() / ".u2net" / "u2net.onnx"
+MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx"
+MODEL_SIZE_MB = 176
+
+_download_progress_callback = None
+
+def download_model_with_progress():
+    """ទាញយក model ជាមួយ Progress Callback"""
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if MODEL_PATH.exists():
+        return  # មានហើយ មិនចាំបាច់ Download ទៀតទេ
+
+    downloaded = [0]
+    def reporthook(count, block_size, total_size):
+        downloaded[0] += block_size
+        if total_size > 0 and _download_progress_callback:
+            pct = min(int(downloaded[0] * 100 / total_size), 100)
+            _download_progress_callback(pct)
+
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH, reporthook=reporthook)
+
+_rembg_ready = False
 def get_rembg():
-    global _rembg_remove
-    if _rembg_remove is None:
-        from rembg import remove as _remove
-        _rembg_remove = _remove
-    return _rembg_remove
+    global _rembg_ready
+    if not _rembg_ready:
+        from rembg import remove  # noqa: trigger model load from cache
+        _rembg_ready = True
+    from rembg import remove
+    return remove
 from telegram import Update, InputFile
 from telegram.ext import (
     Application,
@@ -261,13 +285,45 @@ async def handle_removebg(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ សូមផ្ញើតែឯកសារប្រភេទរូបភាពប៉ុណ្ណោះ។")
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text("⏳ កំពុងដំណើរការ AI លុបផ្ទៃខាងក្រោយ... សូមរង់ចាំ។")
+    # ពិនិត្យថាតើ model មានហើយឬអត់
+    if not MODEL_PATH.exists():
+        status_msg = await update.message.reply_text(
+            f"⬇️ កំពុង Download AI Model (~{MODEL_SIZE_MB}MB) លើកដំបូង...\n"
+            f"[░░░░░░░░░░] 0%"
+        )
+    else:
+        status_msg = await update.message.reply_text("⏳ កំពុងដំណើរការ AI លុបផ្ទៃខាងក្រោយ... សូមរង់ចាំ។")
 
     try:
         # ទាញយករូបភាពទៅក្នុង Memory ជាប្រភេទ Bytes
         img_bytes = await photo_file.download_as_bytearray()
 
-        # ប្រើ rembg ដំណើរការក្នុងម៉ាស៊ីន Render ផ្ទាល់ (គ្មានការតភ្ជាប់ខាងក្រៅ)
+        # បើ model មិនទាន់មាន → Download ជាមួយ Progress
+        if not MODEL_PATH.exists():
+            global _download_progress_callback
+            loop = asyncio.get_event_loop()
+            last_pct = [-1]
+
+            def on_progress(pct):
+                if pct - last_pct[0] >= 10:  # Update រៀងរាល់ 10%
+                    last_pct[0] = pct
+                    filled = pct // 10
+                    bar = "█" * filled + "░" * (10 - filled)
+                    asyncio.run_coroutine_threadsafe(
+                        status_msg.edit_text(
+                            f"⬇️ កំពុង Download AI Model (~{MODEL_SIZE_MB}MB)...\n"
+                            f"[{bar}] {pct}%"
+                        ),
+                        loop
+                    )
+
+            _download_progress_callback = on_progress
+            await loop.run_in_executor(None, download_model_with_progress)
+            _download_progress_callback = None
+
+            await status_msg.edit_text("✅ Download រួចរាល់! កំពុងកាត់ Background...")
+
+        # ដំណើរការ rembg
         loop = asyncio.get_event_loop()
         output_bytes = await loop.run_in_executor(
             None, get_rembg(), bytes(img_bytes)
