@@ -1,18 +1,3 @@
-"""
-QuickTools KH — Telegram AI Utility Bot
-========================================
-Features:
-  • /pdf        — Convert images to PDF
-  • /check      — VirusTotal file scan
-  • /removebg   — Remove.bg background removal
-  • /tti        — Text-to-Image via Gemini API
-  • Flask dashboard with MongoDB-backed stats
-  • Persistent MongoDB Atlas storage (users, activities, stats)
-  • Full user tracking (user_id, username, first_name, join date, last activity)
-
-Deployment: Render Free Tier (no GPU, no local models, low RAM)
-"""
-
 import os
 import logging
 import threading
