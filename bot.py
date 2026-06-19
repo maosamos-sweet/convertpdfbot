@@ -8,6 +8,8 @@ from telegram.ext import (Application, CommandHandler, MessageHandler,
 from PIL import Image
 from pymongo import MongoClient, DESCENDING
 from pymongo.errors import PyMongoError
+from google import genai
+from google.genai import types as genai_types
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,6 +19,66 @@ VIRUSTOTAL_API_KEY  = os.environ.get("VIRUSTOTAL_API_KEY", "")
 REMOVEBG_API_KEY    = os.environ.get("REMOVEBG_API_KEY", "")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 MONGODB_URI         = os.environ.get("MONGODB_URI", "")
+
+# ==================== GEMINI (TTI) ====================
+# Candidate image-generation models in priority order (best/newest first).
+# We confirm at runtime which of these the account actually has access to
+# by listing models via the Gemini API, instead of hardcoding blindly.
+TTI_MODEL_CANDIDATES = [
+    "gemini-3.1-flash-image",      # Nano Banana 2 (current default, cost-efficient)
+    "gemini-3-pro-image",          # Nano Banana Pro (highest quality)
+    "gemini-2.5-flash-image",      # previous-gen Nano Banana, still supported
+]
+
+_genai_client = None
+_tti_model_cache = None  # resolved model name, cached after first successful discovery
+
+def get_genai_client():
+    global _genai_client
+    if _genai_client is None and GEMINI_API_KEY:
+        _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _genai_client
+
+def list_image_generation_models():
+    """List all models available to this API key that support image-output
+    generateContent, and log them. Returns the list of model name strings
+    (e.g. 'models/gemini-3.1-flash-image')."""
+    client = get_genai_client()
+    if not client:
+        return []
+    image_models = []
+    try:
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            output_modalities = getattr(m, "supported_generation_methods", None) or []
+            name = getattr(m, "name", "") or ""
+            # Heuristic: model name mentions "image" (Nano Banana family) and supports generateContent
+            if "image" in name.lower() and ("generateContent" in actions or not actions):
+                image_models.append(name)
+        logger.info(f"Gemini image-generation-capable models available: {image_models}")
+    except Exception as e:
+        logger.error(f"Failed to list Gemini models: {e}", exc_info=True)
+    return image_models
+
+def resolve_tti_model():
+    """Pick the best supported image-generation model for this API key,
+    preferring TTI_MODEL_CANDIDATES order, falling back to whatever the
+    account has access to. Result is cached for the process lifetime."""
+    global _tti_model_cache
+    if _tti_model_cache:
+        return _tti_model_cache
+    available = list_image_generation_models()
+    available_short = {a.split("/")[-1] for a in available}
+    for candidate in TTI_MODEL_CANDIDATES:
+        if not available or candidate in available_short:
+            _tti_model_cache = candidate
+            return candidate
+    if available_short:
+        _tti_model_cache = sorted(available_short)[0]
+        return _tti_model_cache
+    # Last resort fallback if listing failed entirely
+    _tti_model_cache = TTI_MODEL_CANDIDATES[0]
+    return _tti_model_cache
 PORT                = int(os.environ.get("PORT", 10000))
 ADMIN_KEY           = os.environ.get("ADMIN_KEY", "")
 
@@ -508,33 +570,44 @@ async def tti_receive_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     status_msg = await update.message.reply_text("⏳ Generating image…")
     full_prompt = f"{prompt_text}, {style_modifier}"
-    try:
-        # Use Gemini Flash image generation (free tier compatible)
-        api_url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.0-flash-preview-image-generation:generateContent"
-            f"?key={GEMINI_API_KEY}"
-        )
-        payload = {
-            "contents": [{"parts": [{"text": full_prompt}]}],
-            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
-        }
-        r = requests.post(api_url, json=payload, timeout=60)
-        if r.status_code != 200:
-            logger.error(f"Gemini error {r.status_code}: {r.text[:300]}")
-            await status_msg.edit_text(f"❌ Gemini API error ({r.status_code}).\nCheck GEMINI_API_KEY.")
-            return ConversationHandler.END
-        result = r.json()
-        # Find image part in response
-        img_b64 = None
-        for part in result["candidates"][0]["content"]["parts"]:
-            if "inlineData" in part:
-                img_b64 = part["inlineData"]["data"]
+    client = get_genai_client()
+    if not client:
+        await status_msg.edit_text("❌ GEMINI_API_KEY is not configured.")
+        return ConversationHandler.END
+
+    # Try the resolved best model first, then fall back through the other
+    # candidates if it errors (e.g. account doesn't have access / model retired).
+    models_to_try = [resolve_tti_model()] + [c for c in TTI_MODEL_CANDIDATES if c != resolve_tti_model()]
+    last_error = None
+    img_bytes = None
+    used_model = None
+    for model_name in models_to_try:
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_name,
+                contents=full_prompt,
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) is not None:
+                    img_bytes = part.inline_data.data
+                    break
+            if img_bytes:
+                used_model = model_name
                 break
-        if not img_b64:
+        except Exception as e:
+            last_error = e
+            logger.error(f"Gemini TTI error with model {model_name}: {e}")
+            continue
+
+    try:
+        if not img_bytes:
+            logger.error(f"TTI failed for all candidate models: {last_error}")
             await status_msg.edit_text("❌ No image generated. Try a different prompt.")
             return ConversationHandler.END
-        img_bytes = base64.b64decode(img_b64)
         buf = BytesIO(img_bytes); buf.seek(0)
         await status_msg.delete()
         await update.message.reply_photo(
@@ -542,9 +615,7 @@ async def tti_receive_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
             caption=f"🎨 *{style_label}*\n📝 _{prompt_text}_",
             parse_mode="Markdown")
         increment_stat("ai_images_generated")
-        record_activity("TTI", user, f"{style_label}: {prompt_text[:60]}")
-    except requests.exceptions.Timeout:
-        await status_msg.edit_text("❌ Timeout. Gemini took too long.")
+        record_activity("TTI", user, f"{style_label}: {prompt_text[:60]} [{used_model}]")
     except Exception as e:
         logger.error(f"TTI error: {e}", exc_info=True)
         await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
