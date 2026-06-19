@@ -3,4 +3,3 @@ Pillow==10.4.0
 flask==3.0.3
 requests==2.31.0
 pymongo==4.7.3
-google-genai>=1.0.0
