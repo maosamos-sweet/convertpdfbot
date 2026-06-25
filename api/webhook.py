@@ -1,4 +1,4 @@
-import os, json, io, time, urllib.parse, requests
+import os, json, io, time, requests
 from http.server import BaseHTTPRequestHandler
 from PIL import Image
 from pymongo import MongoClient
@@ -7,8 +7,10 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
+HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
 
 mongo = MongoClient(MONGODB_URI) if MONGODB_URI else None
 db = mongo["quicktools_vercel"] if mongo else None
@@ -41,6 +43,36 @@ def clear_state(uid):
     if db is not None:
         db.sessions.delete_one({"uid": uid})
 
+def generate_flux_image(prompt):
+    if not HF_TOKEN:
+        return None, "HF_TOKEN missing"
+
+    response = requests.post(
+        HF_MODEL_URL,
+        headers={
+            "Authorization": f"Bearer {HF_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "inputs": prompt,
+            "parameters": {
+                "num_inference_steps": 4,
+                "guidance_scale": 0.0,
+                "width": 1024,
+                "height": 1024
+            }
+        },
+        timeout=120
+    )
+
+    if response.status_code != 200:
+        try:
+            return None, response.json()
+        except Exception:
+            return None, response.text[:300]
+
+    return response.content, None
+
 def handle_message(msg):
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
@@ -48,11 +80,11 @@ def handle_message(msg):
 
     if text == "/start":
         clear_state(user_id)
-        send(chat_id, "👋 QuickTools KH on Vercel ✅\n\n/pdf រូបភាពទៅ PDF\n/check ពិនិត្យ file\n/removebg លុប background\n/tti AI image")
+        send(chat_id, "👋 QuickTools KH on Vercel ✅\n\n/pdf រូបភាពទៅ PDF\n/check ពិនិត្យ file\n/removebg លុប background\n/tti AI image with FLUX")
         return
 
     if text == "/help":
-        send(chat_id, "/pdf ផ្ញើរូបភាពច្រើន រួច /done\n/check ផ្ញើ file\n/removebg ផ្ញើរូប\n/tti សរសេរ prompt")
+        send(chat_id, "/pdf ផ្ញើរូបភាពច្រើន រួច /done\n/check ផ្ញើ file\n/removebg ផ្ញើរូប\n/tti សរសេរ prompt បង្កើតរូប AI")
         return
 
     if text == "/cancel":
@@ -78,23 +110,27 @@ def handle_message(msg):
 
         send(chat_id, f"⏳ កំពុងបង្កើត PDF {len(photos)} រូប...")
 
-        images = []
-        for fid in photos:
-            b = get_file(fid)
-            img = Image.open(io.BytesIO(b))
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            images.append(img)
+        try:
+            images = []
+            for fid in photos:
+                b = get_file(fid)
+                img = Image.open(io.BytesIO(b))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                images.append(img)
 
-        out = io.BytesIO()
-        images[0].save(out, format="PDF", save_all=True, append_images=images[1:], resolution=150)
-        out.seek(0)
+            out = io.BytesIO()
+            images[0].save(out, format="PDF", save_all=True, append_images=images[1:], resolution=150)
+            out.seek(0)
 
-        tg(
-            "sendDocument",
-            {"chat_id": chat_id, "caption": "✅ PDF រួចរាល់"},
-            {"document": ("converted.pdf", out, "application/pdf")}
-        )
+            tg(
+                "sendDocument",
+                {"chat_id": chat_id, "caption": "✅ PDF រួចរាល់"},
+                {"document": ("converted.pdf", out, "application/pdf")}
+            )
+        except Exception as e:
+            send(chat_id, f"❌ PDF error: {str(e)[:150]}")
+
         clear_state(user_id)
         return
 
@@ -110,26 +146,26 @@ def handle_message(msg):
 
     if text == "/tti":
         set_state(user_id, "tti")
-        send(chat_id, "🎨 សរសេរ prompt របស់អ្នក ឧ: Khmer warrior riding dragon")
+        send(chat_id, "🎨 សរសេរ prompt របស់អ្នក\nឧ: A beautiful Khmer warrior king, ultra realistic, cinematic lighting")
         return
 
     state_doc = get_state(user_id)
     state = state_doc.get("state")
 
     if state == "tti" and text:
-        send(chat_id, "⏳ Generating image...")
-        prompt = urllib.parse.quote(text + ", high quality, detailed")
-        img_url = f"https://image.pollinations.ai/prompt/{prompt}"
+        send(chat_id, "🎨 Generating with FLUX AI...")
 
-        r = requests.get(img_url, timeout=60)
-        if r.status_code == 200:
+        prompt = text.strip()
+        image_bytes, error = generate_flux_image(prompt)
+
+        if image_bytes:
             tg(
                 "sendPhoto",
-                {"chat_id": chat_id, "caption": f"🎨 {text}"},
-                {"photo": ("image.png", io.BytesIO(r.content), "image/png")}
+                {"chat_id": chat_id, "caption": f"🎨 FLUX\n\n{prompt[:900]}"},
+                {"photo": ("flux.png", io.BytesIO(image_bytes), "image/png")}
             )
         else:
-            send(chat_id, "❌ AI image failed")
+            send(chat_id, f"❌ Hugging Face error:\n{str(error)[:500]}")
 
         clear_state(user_id)
         return
@@ -149,26 +185,29 @@ def handle_message(msg):
                 send(chat_id, "❌ REMOVEBG_API_KEY មិនទាន់ដាក់")
                 return
 
-            fid = msg["photo"][-1]["file_id"]
-            b = get_file(fid)
-            send(chat_id, "⏳ កំពុងលុប background...")
+            try:
+                fid = msg["photo"][-1]["file_id"]
+                b = get_file(fid)
+                send(chat_id, "⏳ កំពុងលុប background...")
 
-            r = requests.post(
-                "https://api.remove.bg/v1.0/removebg",
-                files={"image_file": ("photo.jpg", b, "image/jpeg")},
-                data={"size": "auto"},
-                headers={"X-Api-Key": REMOVEBG_API_KEY},
-                timeout=60
-            )
-
-            if r.status_code == 200:
-                tg(
-                    "sendDocument",
-                    {"chat_id": chat_id, "caption": "✅ Removed background"},
-                    {"document": ("removed_bg.png", io.BytesIO(r.content), "image/png")}
+                r = requests.post(
+                    "https://api.remove.bg/v1.0/removebg",
+                    files={"image_file": ("photo.jpg", b, "image/jpeg")},
+                    data={"size": "auto"},
+                    headers={"X-Api-Key": REMOVEBG_API_KEY},
+                    timeout=60
                 )
-            else:
-                send(chat_id, "❌ RemoveBG failed")
+
+                if r.status_code == 200:
+                    tg(
+                        "sendDocument",
+                        {"chat_id": chat_id, "caption": "✅ Removed background"},
+                        {"document": ("removed_bg.png", io.BytesIO(r.content), "image/png")}
+                    )
+                else:
+                    send(chat_id, f"❌ RemoveBG failed: {r.text[:200]}")
+            except Exception as e:
+                send(chat_id, f"❌ RemoveBG error: {str(e)[:150]}")
 
             clear_state(user_id)
             return
@@ -190,20 +229,23 @@ def handle_message(msg):
                 send(chat_id, "❌ VIRUSTOTAL_API_KEY មិនទាន់ដាក់")
                 return
 
-            send(chat_id, "⏳ កំពុងពិនិត្យ file...")
-            b = get_file(doc["file_id"])
+            try:
+                send(chat_id, "⏳ កំពុងពិនិត្យ file...")
+                b = get_file(doc["file_id"])
 
-            r = requests.post(
-                "https://www.virustotal.com/api/v3/files",
-                headers={"x-apikey": VIRUSTOTAL_API_KEY},
-                files={"file": (doc.get("file_name", "file"), b)},
-                timeout=60
-            )
+                r = requests.post(
+                    "https://www.virustotal.com/api/v3/files",
+                    headers={"x-apikey": VIRUSTOTAL_API_KEY},
+                    files={"file": (doc.get("file_name", "file"), b)},
+                    timeout=60
+                )
 
-            if r.status_code == 200:
-                send(chat_id, "✅ File uploaded to VirusTotal.")
-            else:
-                send(chat_id, "❌ VirusTotal failed")
+                if r.status_code == 200:
+                    send(chat_id, "✅ File uploaded to VirusTotal.")
+                else:
+                    send(chat_id, f"❌ VirusTotal failed: {r.text[:200]}")
+            except Exception as e:
+                send(chat_id, f"❌ VirusTotal error: {str(e)[:150]}")
 
             clear_state(user_id)
             return
