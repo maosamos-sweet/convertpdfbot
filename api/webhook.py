@@ -1,4 +1,4 @@
-import os, json, io, time, requests
+import os, json, io, time, re, requests
 from http.server import BaseHTTPRequestHandler
 from PIL import Image
 from pymongo import MongoClient
@@ -74,9 +74,41 @@ def generate_flux_image(prompt):
 
     return response.content, None
 
+def _vt_stats_to_verdict(stats):
+    malicious = stats.get("malicious", 0)
+    suspicious = stats.get("suspicious", 0)
+    harmless = stats.get("harmless", 0)
+    undetected = stats.get("undetected", 0)
+    total = malicious + suspicious + harmless + undetected
+
+    if malicious > 0 or suspicious > 0:
+        return f"🚨 គ្រោះថ្នាក់! {malicious} malicious, {suspicious} suspicious (ក្នុងចំណោម {total} engines)"
+    return f"✅ សុវត្ថិភាព — 0 detections (ក្នុងចំណោម {total} engines)"
+
+
 def check_virustotal(file_bytes, filename):
-    """Upload a file to VirusTotal and poll until the analysis finishes.
+    """Look up a file on VirusTotal by SHA256 first (avoids AlreadySubmittedError
+    and is instant for already-known files). Falls back to uploading + polling
+    only if VT has never seen this file before.
     Returns (verdict_text, error)."""
+    import hashlib
+    sha256 = hashlib.sha256(file_bytes).hexdigest()
+
+    # 1. Try existing report first
+    try:
+        r = requests.get(
+            f"https://www.virustotal.com/api/v3/files/{sha256}",
+            headers={"x-apikey": VIRUSTOTAL_API_KEY},
+            timeout=30
+        )
+        if r.status_code == 200:
+            stats = r.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
+            return _vt_stats_to_verdict(stats), None
+        # 404 = VT has never seen this file -> fall through to upload
+    except Exception:
+        pass
+
+    # 2. Upload for fresh scan
     try:
         r = requests.post(
             "https://www.virustotal.com/api/v3/files",
@@ -87,14 +119,34 @@ def check_virustotal(file_bytes, filename):
     except Exception as e:
         return None, f"upload failed: {str(e)[:150]}"
 
-    if r.status_code != 200:
+    analysis_id = None
+    if r.status_code == 200:
+        analysis_id = r.json().get("data", {}).get("id")
+    elif r.status_code == 409:
+        # Someone else is scanning the same hash right now - poll the file
+        # report by hash instead of by analysis id.
+        for _ in range(20):
+            time.sleep(3)
+            try:
+                fr = requests.get(
+                    f"https://www.virustotal.com/api/v3/files/{sha256}",
+                    headers={"x-apikey": VIRUSTOTAL_API_KEY},
+                    timeout=30
+                )
+            except Exception:
+                continue
+            if fr.status_code == 200:
+                stats = fr.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
+                if stats:
+                    return _vt_stats_to_verdict(stats), None
+        return None, "ការវិភាគចំណាយពេលយូរពេក — សូមព្យាយាមម្តងទៀតក្រោយ"
+    else:
         return None, f"upload failed ({r.status_code}): {r.text[:200]}"
 
-    analysis_id = r.json().get("data", {}).get("id")
     if not analysis_id:
         return None, "no analysis id returned"
 
-    # Poll for the result. VT scans usually take 15-60s.
+    # 3. Poll the analysis until it completes
     for _ in range(20):
         time.sleep(3)
         try:
@@ -113,19 +165,27 @@ def check_virustotal(file_bytes, filename):
         status = data.get("attributes", {}).get("status")
         if status == "completed":
             stats = data.get("attributes", {}).get("stats", {})
-            malicious = stats.get("malicious", 0)
-            suspicious = stats.get("suspicious", 0)
-            harmless = stats.get("harmless", 0)
-            undetected = stats.get("undetected", 0)
-            total = malicious + suspicious + harmless + undetected
-
-            if malicious > 0 or suspicious > 0:
-                verdict = f"🚨 គ្រោះថ្នាក់! {malicious} malicious, {suspicious} suspicious (ក្នុងចំណោម {total} engines)"
-            else:
-                verdict = f"✅ សុវត្ថិភាព — 0 detections (ក្នុងចំណោម {total} engines)"
-            return verdict, None
+            return _vt_stats_to_verdict(stats), None
 
     return None, "ការវិភាគចំណាយពេលយូរពេក — សូមព្យាយាមម្តងទៀតក្រោយ"
+
+
+SUSPICIOUS_EXT_PATTERN = re.compile(
+    r"\.(pdf|doc|docx|jpg|jpeg|png|xls|xlsx|txt)\.(exe|scr|bat|cmd|js|jar|vbs|ps1|msi|z|zip|rar|7z|apk|com|pif)$",
+    re.IGNORECASE
+)
+
+def local_filename_check(filename):
+    """Quick heuristic for disguised-executable filenames like
+    'Resume.pdf.z' or 'Photo.jpg.exe' - a common scam pattern."""
+    if SUSPICIOUS_EXT_PATTERN.search(filename or ""):
+        return (
+            "🚨 ប្រុងប្រយ័ត្ន! ឈ្មោះ file នេះមាន double extension "
+            f"(`{filename}`) — នេះជា pattern ដែល scammer ច្រើនប្រើដើម្បីលាក់ file "
+            "គ្រោះថ្នាក់ (.exe/.scr/.z ជាដើម) ឲ្យមើលទៅដូច file ធម្មតា។ "
+            "កុំបើក file នេះ! កំពុងបន្តពិនិត្យជាមួយ VirusTotal..."
+        )
+    return None
 
 
 def handle_message(msg):
@@ -285,6 +345,10 @@ def handle_message(msg):
                 return
 
             try:
+                warning = local_filename_check(doc.get("file_name", ""))
+                if warning:
+                    send(chat_id, warning)
+
                 send(chat_id, "⏳ កំពុងពិនិត្យ file... (អាចចំណាយពេលដល់ 1 នាទី)")
                 b = get_file(doc["file_id"])
 
