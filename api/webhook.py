@@ -8,6 +8,7 @@ MONGODB_URI = os.environ.get("MONGODB_URI", "")
 REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
+WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
 HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
@@ -72,6 +73,60 @@ def generate_flux_image(prompt):
             return None, response.text[:300]
 
     return response.content, None
+
+def check_virustotal(file_bytes, filename):
+    """Upload a file to VirusTotal and poll until the analysis finishes.
+    Returns (verdict_text, error)."""
+    try:
+        r = requests.post(
+            "https://www.virustotal.com/api/v3/files",
+            headers={"x-apikey": VIRUSTOTAL_API_KEY},
+            files={"file": (filename, file_bytes)},
+            timeout=60
+        )
+    except Exception as e:
+        return None, f"upload failed: {str(e)[:150]}"
+
+    if r.status_code != 200:
+        return None, f"upload failed ({r.status_code}): {r.text[:200]}"
+
+    analysis_id = r.json().get("data", {}).get("id")
+    if not analysis_id:
+        return None, "no analysis id returned"
+
+    # Poll for the result. VT scans usually take 15-60s.
+    for _ in range(20):
+        time.sleep(3)
+        try:
+            ar = requests.get(
+                f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
+                headers={"x-apikey": VIRUSTOTAL_API_KEY},
+                timeout=30
+            )
+        except Exception:
+            continue
+
+        if ar.status_code != 200:
+            continue
+
+        data = ar.json().get("data", {})
+        status = data.get("attributes", {}).get("status")
+        if status == "completed":
+            stats = data.get("attributes", {}).get("stats", {})
+            malicious = stats.get("malicious", 0)
+            suspicious = stats.get("suspicious", 0)
+            harmless = stats.get("harmless", 0)
+            undetected = stats.get("undetected", 0)
+            total = malicious + suspicious + harmless + undetected
+
+            if malicious > 0 or suspicious > 0:
+                verdict = f"🚨 គ្រោះថ្នាក់! {malicious} malicious, {suspicious} suspicious (ក្នុងចំណោម {total} engines)"
+            else:
+                verdict = f"✅ សុវត្ថិភាព — 0 detections (ក្នុងចំណោម {total} engines)"
+            return verdict, None
+
+    return None, "ការវិភាគចំណាយពេលយូរពេក — សូមព្យាយាមម្តងទៀតក្រោយ"
+
 
 def handle_message(msg):
     chat_id = msg["chat"]["id"]
@@ -230,20 +285,14 @@ def handle_message(msg):
                 return
 
             try:
-                send(chat_id, "⏳ កំពុងពិនិត្យ file...")
+                send(chat_id, "⏳ កំពុងពិនិត្យ file... (អាចចំណាយពេលដល់ 1 នាទី)")
                 b = get_file(doc["file_id"])
 
-                r = requests.post(
-                    "https://www.virustotal.com/api/v3/files",
-                    headers={"x-apikey": VIRUSTOTAL_API_KEY},
-                    files={"file": (doc.get("file_name", "file"), b)},
-                    timeout=60
-                )
-
-                if r.status_code == 200:
-                    send(chat_id, "✅ File uploaded to VirusTotal.")
+                verdict, error = check_virustotal(b, doc.get("file_name", "file"))
+                if verdict:
+                    send(chat_id, verdict)
                 else:
-                    send(chat_id, f"❌ VirusTotal failed: {r.text[:200]}")
+                    send(chat_id, f"❌ VirusTotal error: {error}")
             except Exception as e:
                 send(chat_id, f"❌ VirusTotal error: {str(e)[:150]}")
 
@@ -260,6 +309,14 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if WEBHOOK_SECRET:
+                incoming = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+                if incoming != WEBHOOK_SECRET:
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b"Forbidden")
+                    return
+
             length = int(self.headers.get("content-length", 0))
             body = self.rfile.read(length)
             update = json.loads(body.decode("utf-8"))
